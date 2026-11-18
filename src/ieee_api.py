@@ -8,6 +8,7 @@ import uuid
 
 from kafka import KafkaProducer
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from feast import FeatureStore
 from xgboost import XGBClassifier
@@ -38,16 +39,44 @@ store = FeatureStore(repo_path=str(FEAST_REPO))
 # Kafka configuration:
 # Local development defaults to localhost:9092.
 # Kubernetes can override this using KAFKA_BOOTSTRAP_SERVERS.
-producer = KafkaProducer(
-    bootstrap_servers=[
-        os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-    ]
-)
+producer = None
+if os.getenv("KAFKA_DISABLED", "0") != "1":
+    try:
+        producer = KafkaProducer(
+            bootstrap_servers=[
+                os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+            ]
+        )
+    except Exception as exc:
+        print("Kafka unavailable, running without it:", exc)
+
+# Optional GNN blend: card-level GNN scores exported offline.
+GNN_SCORES = {}
+GNN_WEIGHT = 0.2
+XGB_WEIGHT = 0.8
+HYBRID_THRESHOLD = THRESHOLD
+_gnn_path = MODEL_DIR / "gnn_card_scores.json"
+if _gnn_path.exists():
+    with open(_gnn_path) as f:
+        GNN_SCORES = json.load(f)
+    _hm = MODEL_DIR / "hybrid_metrics.json"
+    if _hm.exists():
+        with open(_hm) as f:
+            HYBRID_THRESHOLD = json.load(f).get(
+                "hybrid_best_validation_threshold", THRESHOLD
+            )
 
 app = FastAPI(
     title="IEEE-CIS Fraud Detection API",
     version="1.0.0",
     description="IEEE-CIS XGBoost prediction with Feast online features"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -148,13 +177,22 @@ def predict(request: TransactionRequest):
             axis=1
         )[ALL_COLS].astype("float64")
 
-        probability = float(model.predict_proba(X_final)[0, 1])
-        prediction = int(probability >= THRESHOLD)
+        xgb_probability = float(model.predict_proba(X_final)[0, 1])
+        gnn_score = GNN_SCORES.get(request.card_key)
+        if gnn_score is not None:
+            probability = XGB_WEIGHT * xgb_probability + GNN_WEIGHT * float(gnn_score)
+            active_threshold = HYBRID_THRESHOLD
+            model_name = "IEEE-CIS-XGBoost+GNN"
+        else:
+            probability = xgb_probability
+            active_threshold = THRESHOLD
+            model_name = "IEEE-CIS-XGBoost"
+        prediction = int(probability >= active_threshold)
 
         transaction_id = str(uuid.uuid4())
 
         kafka_message = {
-    "model": "IEEE-CIS-XGBoost",
+    "model": model_name,
     "transaction_id": transaction_id,
 
     # Exact feature values passed to the model
@@ -166,24 +204,29 @@ def predict(request: TransactionRequest):
     "fraud_probability": probability,
     "prediction": prediction,
     "label": "FRAUD" if prediction else "NORMAL",
-    "threshold": THRESHOLD
+    "threshold": active_threshold
 }
 
-        producer.send(
-            "fraud-transactions",
-            value=json.dumps(kafka_message).encode("utf-8")
-        )
-        producer.flush()
+        kafka_status = "DISABLED"
+        if producer is not None:
+            producer.send(
+                "fraud-transactions",
+                value=json.dumps(kafka_message).encode("utf-8")
+            )
+            producer.flush()
+            kafka_status = "MESSAGE_SENT"
 
         return {
             "transaction_id": transaction_id,
             "fraud_probability": probability,
-            "threshold": THRESHOLD,
+            "threshold": active_threshold,
             "prediction": prediction,
             "label": "FRAUD" if prediction else "NORMAL",
-            "model": "IEEE-CIS-XGBoost",
+            "model": model_name,
             "feature_source": "Feast Online Store",
-            "kafka_status": "MESSAGE_SENT"
+            "xgb_probability": xgb_probability,
+            "gnn_used": gnn_score is not None,
+            "kafka_status": kafka_status
         }
 
     except HTTPException:

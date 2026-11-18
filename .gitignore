@@ -40,3 +40,7 @@ reports/ieee_live_drift_report.html
 reports/evidence/live_monitoring/ieee_live_drift_report.html
 mlflow_ieee.db
 mlartifacts/
+
+*.bak*
+*.backup*
+scripts/patch_api_blend.py

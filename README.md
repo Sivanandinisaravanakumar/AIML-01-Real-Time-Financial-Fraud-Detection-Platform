@@ -439,3 +439,10 @@ See [docs/architecture.md](docs/architecture.md).
 
 - The GNN and hybrid are offline experiments and are not served by the API.
 - The Kaggle test file has no labels, so final metrics need an independent labelled split.
+
+## Live Demo (Frontend)
+
+Frontend: https://aiml-01-real-time-financial-fraud-d.vercel.app/
+
+The frontend is a static page hosted on Vercel. It calls the FastAPI backend running on a local Docker Desktop Kubernetes cluster, exposed through a temporary Cloudflare tunnel, so it works only while the demo machine is on. The permanent code is in the GitHub repository.
+

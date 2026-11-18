@@ -1,4 +1,4 @@
-# AI-Based Credit Card Fraud Detection System
+﻿# AI-Based Credit Card Fraud Detection System
 
 An end-to-end machine learning capstone project for credit card fraud detection using traditional ML, real-time streaming, feature stores, model monitoring, and containerized deployment.
 
@@ -65,9 +65,9 @@ Additional project components:
 | Streaming | Apache Kafka |
 | Dashboard | Streamlit |
 | Monitoring | Evidently AI |
-| Experiment tracking | MLflow |
+| Experiment tracking | MLflow (training runs logged by `src/train_ieee_model.py`; UI: `python -m mlflow ui --backend-store-uri sqlite:///mlflow.db --host 127.0.0.1 --port 5002`) |
 | Containerization | Docker |
-| Orchestration | Kubernetes, Minikube |
+| Orchestration | Kubernetes (Docker Desktop) |
 
 ## 4. Model Performance
 
@@ -311,45 +311,29 @@ The image contains:
 - Feast feature definitions and local store data
 - Python runtime dependencies
 
-## 13. Kubernetes Deployment with Minikube
+## 13. Kubernetes Deployment (Docker Desktop)
 
-Load the image into Minikube if it is not already available:
+Verified on a local Docker Desktop Kubernetes cluster (context: `docker-desktop`).
 
-```powershell
-minikube image load fraud-detection-ieee-api:latest
-```
+    docker compose up -d kafka
+    docker build -f Dockerfile.ieee -t fraud-detection-ieee-api:latest .
+    kubectl apply -f k8s/ieee-deployment.yaml
+    kubectl rollout status deployment/ieee-fraud-api
+    curl.exe http://localhost:30082/
 
-Apply the Kubernetes manifest:
-
-```powershell
-kubectl apply -f k8s/ieee-deployment.yaml
-```
-
-Check deployment status:
-
-```powershell
-kubectl get deployments
-kubectl get pods
-kubectl get services
-kubectl rollout status deployment/ieee-fraud-api
-```
-
-Open the service URL:
-
-```powershell
-minikube service ieee-fraud-api --url
-```
-
-Keep the terminal running while using the returned service URL. Swagger documentation is available at:
-
-```text
-<service-url>/docs
-```
-
-The Kubernetes service uses NodePort `30082` and targets container port `8000`.
-
+The manifest uses `imagePullPolicy: Never`, so the image must exist in the local
+Docker daemon. NodePort `30082` maps to container port `8000`. The pod reaches Kafka
+at `host.docker.internal:9093`. This is a local deployment, not a public cloud URL.
 ## 14. Important Limitations
 
+- Metrics in `models/ieee_cis/metrics.json` are at threshold 0.5 (PR-AUC 0.351, ROC-AUC 0.881, recall 74%, precision 16%). The API uses a tuned threshold of 0.7657 (precision 31.6%, recall 45.5%, F1 0.373).
+- The Live Kafka Alerts page shows transactions consumed while the dashboard is open. The demo feed replays IEEE-CIS test rows (the test set has no labels).
+- The 85% drift figure from the live monitor is computed on streamed data that includes manual test and replay records. It demonstrates the trigger, not real production drift.
+- Retraining is gated on labelled data. The production model is never replaced automatically; candidate evaluation and promotion are not verified end to end.
+- GNN weights (`*.pt`) are not packaged in the API image. The API scores with XGBoost + Feast. The XGBoost + GNN blend was evaluated offline and did not outperform XGBoost alone; GNN and hybrid results are experimental.
+- GNN metrics (e.g. v2: AP 0.575, ROC-AUC 0.850) are card-node level on 2,979 validation cards and are not directly comparable to the transaction-level XGBoost PR-AUC (0.351). The first GNN attempt (v1) did not learn (ROC-AUC 0.5); v2 improved on it.
+- The XGBoost training run (params, metrics, artifacts) is tracked in MLflow by `src/train_ieee_model.py`. GNN, hybrid and threshold summary metrics were logged afterwards from saved JSON files (`scripts/log_mlflow_runs.py`).
+- Kubernetes was verified on Docker Desktop. Minikube was not used for the final deployment.
 - This is an educational prototype, not a production banking system.
 - Dataset anonymization limits the interpretation of some features.
 - Validation metrics do not guarantee performance on future transactions.

@@ -1,0 +1,13 @@
+{
+    "dataset": "IEEE-CIS",
+    "drift_share": 0.3333333333333333,
+    "drift_threshold": 0.5,
+    "retraining_required": false,
+    "labelled_data_available": false,
+    "labelled_rows": 0,
+    "candidate_training_allowed": false,
+    "production_model_changed": false,
+    "status": "NO_ACTION",
+    "reason": "Drift is below configured threshold.",
+    "checked_at_utc": "2026-11-17T13:58:33.192428+00:00"
+}

@@ -106,7 +106,7 @@ def predict(request: TransactionRequest):
         row = {
             "TransactionDT": txn_dt,
             "TransactionAmt": float(request.TransactionAmt),
-            "transaction_hour": txn_dt // 3600,
+            "transaction_hour": (txn_dt // 3600) % 24,
             "transaction_day": txn_dt // 86400,
             "card_txn_count_1h": online["card_txn_count_1h"][0],
             "card_txn_count_24h": online["card_txn_count_24h"][0],
@@ -154,13 +154,20 @@ def predict(request: TransactionRequest):
         transaction_id = str(uuid.uuid4())
 
         kafka_message = {
-            "transaction_id": transaction_id,
-            "features": request.model_dump(),
-            "fraud_probability": probability,
-            "prediction": prediction,
-            "label": "FRAUD" if prediction else "NORMAL",
-            "threshold": THRESHOLD
-        }
+    "model": "IEEE-CIS-XGBoost",
+    "transaction_id": transaction_id,
+
+    # Exact feature values passed to the model
+    "features": X_final.iloc[0].to_dict(),
+
+    # Original API input for auditing
+    "raw_features": request.model_dump(),
+
+    "fraud_probability": probability,
+    "prediction": prediction,
+    "label": "FRAUD" if prediction else "NORMAL",
+    "threshold": THRESHOLD
+}
 
         producer.send(
             "fraud-transactions",

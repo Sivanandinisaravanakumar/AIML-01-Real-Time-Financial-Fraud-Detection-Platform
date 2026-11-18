@@ -3,6 +3,8 @@ import json
 from datetime import datetime
 
 import pandas as pd
+import networkx as nx
+import plotly.graph_objects as go
 import streamlit as st
 from kafka import KafkaConsumer
 
@@ -166,7 +168,6 @@ cases = load_cases()
 # --------------------------------------------------
 
 st.sidebar.title("Dashboard Menu")
-st.sidebar.write("Project: AIML-01")
 st.sidebar.write("Dataset: IEEE-CIS")
 
 page = st.sidebar.radio(
@@ -176,6 +177,7 @@ page = st.sidebar.radio(
         "Analyst Case Queue",
         "Data Drift",
         "Live Kafka Alerts",
+        "Fraud Network",
     ],
 )
 
@@ -467,6 +469,246 @@ elif page == "Live Kafka Alerts":
             )
 
     display_live_alerts()
+
+
+
+# --------------------------------------------------
+# Fraud Network
+# --------------------------------------------------
+
+elif page == "Fraud Network":
+
+    st.header("Shared Device Fraud Network")
+
+    st.caption(
+        "Card-device relationships from IEEE-CIS training data. "
+        "Only devices shared by 2?20 cards are considered."
+    )
+
+    required_columns = [
+        "TransactionID", "isFraud",
+        "card1", "card2", "card3", "card5", "card6",
+        "DeviceInfo",
+    ]
+
+    if not TRAIN_FILE.exists():
+        st.error(f"Training data not found: {TRAIN_FILE}")
+        st.stop()
+
+    with st.spinner("Building card-device network..."):
+        df = pd.read_csv(TRAIN_FILE, usecols=required_columns)
+
+        card_columns = ["card1", "card2", "card3", "card5", "card6"]
+
+        df["card_key"] = (
+            df[card_columns]
+            .astype("string")
+            .fillna("missing")
+            .agg("_".join, axis=1)
+        )
+
+        missing_card = df["card1"].isna()
+        df.loc[missing_card, "card_key"] = (
+            "missing_" + df.loc[missing_card, "TransactionID"].astype(str)
+        )
+
+        known = df[df["DeviceInfo"].notna()].copy()
+
+        device_stats = known.groupby("DeviceInfo").agg(
+            cards=("card_key", "nunique"),
+            fraud_transactions=("isFraud", "sum"),
+            transactions=("TransactionID", "count"),
+        )
+
+        selected = device_stats[
+            device_stats["cards"].between(2, 20)
+            & (device_stats["fraud_transactions"] > 0)
+        ].nlargest(10, "fraud_transactions")
+
+        if selected.empty:
+            st.info("No qualifying shared-device groups were found.")
+            st.stop()
+
+        network_rows = known[
+            known["DeviceInfo"].isin(selected.index)
+        ].copy()
+
+        card_stats = network_rows.groupby("card_key").agg(
+            is_fraud=("isFraud", "max"),
+            transactions=("TransactionID", "count"),
+            fraud_transactions=("isFraud", "sum"),
+        )
+
+        edges = network_rows[
+            ["DeviceInfo", "card_key"]
+        ].drop_duplicates()
+
+        graph = nx.Graph()
+
+        for device, row in selected.iterrows():
+            graph.add_node(
+                ("device", device),
+                kind="device",
+                label=device,
+                cards=int(row["cards"]),
+                fraud_transactions=int(row["fraud_transactions"]),
+                transactions=int(row["transactions"]),
+            )
+
+        for card, row in card_stats.iterrows():
+            graph.add_node(
+                ("card", card),
+                kind="card",
+                label=card,
+                is_fraud=int(row["is_fraud"]),
+                transactions=int(row["transactions"]),
+                fraud_transactions=int(row["fraud_transactions"]),
+            )
+
+        for _, edge in edges.iterrows():
+            graph.add_edge(
+                ("device", edge["DeviceInfo"]),
+                ("card", edge["card_key"]),
+            )
+
+        positions = nx.spring_layout(
+            graph,
+            seed=42,
+            k=0.8,
+            iterations=80,
+        )
+
+    fraud_cards = [
+        node for node, attrs in graph.nodes(data=True)
+        if attrs["kind"] == "card" and attrs["is_fraud"] == 1
+    ]
+
+    other_cards = [
+        node for node, attrs in graph.nodes(data=True)
+        if attrs["kind"] == "card" and attrs["is_fraud"] == 0
+    ]
+
+    device_nodes = [
+        node for node, attrs in graph.nodes(data=True)
+        if attrs["kind"] == "device"
+    ]
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Shared Devices", len(device_nodes))
+    col2.metric("Connected Cards", len(card_stats))
+    col3.metric("Card-Device Links", len(edges))
+    col4.metric("Cards with Fraud Labels", len(fraud_cards))
+
+    st.info(
+        "Red = card has at least one confirmed fraud transaction in the "
+        "training data. Grey = no confirmed fraud transaction in this data. "
+        "Blue = shared device. A shared device is an investigation lead, "
+        "not proof of a coordinated fraud ring."
+    )
+
+    edge_x = []
+    edge_y = []
+
+    for source, target in graph.edges():
+        x0, y0 = positions[source]
+        x1, y1 = positions[target]
+        edge_x.extend([x0, x1, None])
+        edge_y.extend([y0, y1, None])
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=edge_x,
+        y=edge_y,
+        mode="lines",
+        line=dict(width=1, color="#9ca3af"),
+        hoverinfo="skip",
+        name="Card-device links",
+    ))
+
+    def add_card_trace(nodes, name, color):
+        if not nodes:
+            return
+
+        fig.add_trace(go.Scatter(
+            x=[positions[node][0] for node in nodes],
+            y=[positions[node][1] for node in nodes],
+            mode="markers",
+            name=name,
+            marker=dict(size=12, color=color, line=dict(width=1, color="white")),
+            customdata=[
+                [
+                    graph.nodes[node]["label"],
+                    graph.nodes[node]["transactions"],
+                    graph.nodes[node]["fraud_transactions"],
+                ]
+                for node in nodes
+            ],
+            hovertemplate=(
+                "Card: %{customdata[0]}<br>"
+                "Transactions: %{customdata[1]}<br>"
+                "Fraud transactions: %{customdata[2]}"
+                "<extra></extra>"
+            ),
+        ))
+
+    add_card_trace(fraud_cards, "Confirmed fraud card", "#dc2626")
+    add_card_trace(other_cards, "Other connected card", "#9ca3af")
+
+    fig.add_trace(go.Scatter(
+        x=[positions[node][0] for node in device_nodes],
+        y=[positions[node][1] for node in device_nodes],
+        mode="markers",
+        name="Shared device",
+        marker=dict(
+            size=20,
+            color="#2563eb",
+            symbol="diamond",
+            line=dict(width=1, color="white"),
+        ),
+        customdata=[
+            [
+                graph.nodes[node]["label"],
+                graph.nodes[node]["cards"],
+                graph.nodes[node]["fraud_transactions"],
+                graph.nodes[node]["transactions"],
+            ]
+            for node in device_nodes
+        ],
+        hovertemplate=(
+            "Device: %{customdata[0]}<br>"
+            "Connected cards: %{customdata[1]}<br>"
+            "Fraud transactions: %{customdata[2]}<br>"
+            "Total transactions: %{customdata[3]}"
+            "<extra></extra>"
+        ),
+    ))
+
+    fig.update_layout(
+        height=720,
+        title="Top 10 Shared Devices and Connected Cards",
+        showlegend=True,
+        hovermode="closest",
+        margin=dict(l=10, r=10, t=55, b=10),
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+        plot_bgcolor="white",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Selected Shared Devices")
+    st.dataframe(
+        selected.reset_index(),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.caption(
+        "Graph uses confirmed IEEE-CIS training labels; "
+        "it does not establish that connected accounts belong to the same actor."
+    )
 
 
 # --------------------------------------------------

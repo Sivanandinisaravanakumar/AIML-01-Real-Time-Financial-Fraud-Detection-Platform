@@ -24,3 +24,19 @@ models/fraud_model.joblib
 # Local dashboard data and model backups
 /reports/analyst_cases.csv
 /models/ieee_cis/threshold_backup.json
+
+.venv-1/
+sample.json
+*.backup
+*.backup_*
+*_backup.py
+models/ieee_cis_backup/
+reports/live_drift_logs/
+
+reports/ieee_live_drift_report.html
+reports/evidence/live_monitoring/ieee_live_drift_report.html
+
+reports/ieee_live_drift_report.html
+reports/evidence/live_monitoring/ieee_live_drift_report.html
+mlflow_ieee.db
+mlartifacts/

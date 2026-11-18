@@ -58,46 +58,75 @@ params = {
 with mlflow.start_run():
     model = XGBClassifier(**params)
 
-    print("Training XGBoost on CPU...")
-    model.fit(X_train, y_train)
+    print("Training XGBoost model...")
 
-    probabilities = model.predict_proba(X_test)[:, 1]
-    predictions = (probabilities >= 0.5).astype(int)
+with mlflow.start_run(run_name="IEEE-CIS-XGBoost"):
 
-    pr_auc = average_precision_score(y_test, probabilities)
-    roc_auc = roc_auc_score(y_test, probabilities)
-    precision = precision_score(
-        y_test, predictions, zero_division=0
-    )
-    recall = recall_score(
-        y_test, predictions, zero_division=0
-    )
-
-    # Record model parameters and evaluation metrics
-    mlflow.log_params(params)
-    mlflow.log_metrics({
-        "pr_auc": pr_auc,
-        "roc_auc": roc_auc,
-        "precision": precision,
-        "recall": recall,
+    mlflow.log_params({
+        "n_estimators": 500,
+        "max_depth": 6,
+        "learning_rate": 0.05,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+        "scale_pos_weight": scale_pos_weight,
+        "eval_metric": "aucpr",
+        "tree_method": "hist",
+        "random_state": 42,
+        "train_rows": len(X_train),
+        "validation_rows": len(X_valid),
+        "fraud_ratio": float(y.mean())
     })
 
-    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    model.save_model(str(MODEL_PATH))
+    model.fit(
+        X_train,
+        y_train,
+        eval_set=[(X_valid, y_valid)],
+        verbose=50
+    )
 
-    print("\n--- EVALUATION RESULTS ---")
-    print("PR-AUC:", round(pr_auc, 4))
-    print("ROC-AUC:", round(roc_auc, 4))
-    print("Precision:", round(precision, 4))
-    print("Recall:", round(recall, 4))
-    print("\nClassification report:")
-    print(classification_report(
-        y_test, predictions, zero_division=0
-    ))
-    print("Confusion matrix:")
-    print(confusion_matrix(y_test, predictions))
+    probabilities = model.predict_proba(X_valid)[:, 1]
+    predictions = (probabilities >= 0.5).astype(int)
 
-    mlflow.log_artifact(str(MODEL_PATH))
+    metrics = {
+        "PR_AUC": float(average_precision_score(y_valid, probabilities)),
+        "ROC_AUC": float(roc_auc_score(y_valid, probabilities)),
+        "Precision": float(precision_score(y_valid, predictions, zero_division=0)),
+        "Recall": float(recall_score(y_valid, predictions, zero_division=0)),
+        "F1": float(f1_score(y_valid, predictions, zero_division=0)),
+        "Confusion_Matrix": confusion_matrix(y_valid, predictions).tolist(),
+        "Best_Iteration": int(model.best_iteration),
+        "Threshold": 0.5
+    }
 
-    print("\nModel saved:", MODEL_PATH)
-    print("MLflow run recorded successfully!")
+    model.save_model(str(MODEL_DIR / "ieee_xgboost.json"))
+    joblib.dump(encoder, MODEL_DIR / "ordinal_encoder.joblib")
+    joblib.dump(medians, MODEL_DIR / "numeric_medians.joblib")
+
+    with open(MODEL_DIR / "metrics.json", "w") as f:
+        json.dump(metrics, f, indent=4)
+
+    with open(MODEL_DIR / "feature_columns.json", "w") as f:
+        json.dump({
+            "numeric": numeric_cols,
+            "categorical": categorical_cols,
+            "all": feature_cols
+        }, f, indent=4)
+
+    mlflow.log_metrics({
+        "PR_AUC": metrics["PR_AUC"],
+        "ROC_AUC": metrics["ROC_AUC"],
+        "Precision": metrics["Precision"],
+        "Recall": metrics["Recall"],
+        "F1": metrics["F1"]
+    })
+
+    mlflow.log_artifact(str(MODEL_DIR / "ieee_xgboost.json"))
+    mlflow.log_artifact(str(MODEL_DIR / "ordinal_encoder.joblib"))
+    mlflow.log_artifact(str(MODEL_DIR / "numeric_medians.joblib"))
+    mlflow.log_artifact(str(MODEL_DIR / "metrics.json"))
+    mlflow.log_artifact(str(MODEL_DIR / "feature_columns.json"))
+
+    print("\nIEEE-CIS MODEL TRAINING COMPLETE")
+    print(json.dumps(metrics, indent=4))
+    print("Saved model to:", MODEL_DIR)
+    print("MLflow tracking URI:", mlflow.get_tracking_uri())

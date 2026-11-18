@@ -1,7 +1,11 @@
-import json
+﻿import json
+from pathlib import Path
+import pandas as pd
 from kafka import KafkaProducer
 
-# Connect to Kafka running in Docker
+ROOT = Path(__file__).resolve().parents[1]
+DATA_PATH = ROOT / "data" / "creditcard.csv"
+
 producer = KafkaProducer(
     bootstrap_servers=["localhost:9092"],
     value_serializer=lambda value: json.dumps(value).encode("utf-8")
@@ -10,16 +14,16 @@ producer = KafkaProducer(
 def send_transaction(transaction):
     producer.send("fraud-transactions", value=transaction)
     producer.flush()
-    print("Transaction sent:", transaction)
-
+    print("Transaction sent:", transaction["transaction_id"])
 
 if __name__ == "__main__":
-    sample_transaction = {
-        "transaction_id": 1001,
-        "amount": 2500.50,
-        "merchant": "Online Store",
-        "is_fraud": 0
+    df = pd.read_csv(DATA_PATH)
+    features = df.drop(columns=["Class"]).iloc[0].to_dict()
+
+    transaction = {
+        "transaction_id": "TX1001",
+        "features": features
     }
 
-    send_transaction(sample_transaction)
+    send_transaction(transaction)
     producer.close()

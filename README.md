@@ -52,7 +52,7 @@ Additional project components:
 - Graph Neural Network experiments for transaction relationship analysis.
 - Docker and Kubernetes deployment for the IEEE-CIS API.
 
-## 3. Tech Stack
+## 3. Technology Stack
 
 | Area | Technologies |
 |---|---|
@@ -65,15 +65,37 @@ Additional project components:
 | Streaming | Apache Kafka |
 | Dashboard | Streamlit |
 | Monitoring | Evidently AI |
-| Experiment tracking | MLflow (training runs logged by `src/train_ieee_model.py`; UI: `python -m mlflow ui --backend-store-uri sqlite:///mlflow.db --host 127.0.0.1 --port 5002`) |
-| Containerization | Docker |
-| Orchestration | Kubernetes (Docker Desktop) |
+| Experiment tracking | MLflow |
+| Containerization | Docker, Docker Compose |
+| Orchestration | Kubernetes using Minikube with Docker driver |
+
+### MLflow Tracking
+
+MLflow is used to track IEEE-CIS XGBoost training experiments, parameters, and evaluation metrics.
+
+Start the MLflow UI from the project root:
+
+```powershell
+.\.venv-feast\Scripts\python.exe -m mlflow ui --backend-store-uri sqlite:///mlflow.db --host 127.0.0.1 --port 5000
+```
+
+Open the UI at:
+
+```text
+http://127.0.0.1:5000
+```
+
+### Deployment Environment
+
+- Docker Compose runs the Kafka service.
+- Minikube with the Docker driver hosts the IEEE-CIS FastAPI deployment.
+- Kubernetes exposes the API through a NodePort service.
 
 ## 4. Model Performance
 
-### Original ULB model
+### Original ULB Credit Card Fraud Model
 
-The following metrics are reported by the original ULB project README:
+The following metrics are reported in the original ULB project README. They are reported separately from the IEEE-CIS experiments.
 
 | Metric | Score |
 |---|---:|
@@ -82,23 +104,31 @@ The following metrics are reported by the original ULB project README:
 | Precision | 0.4398 |
 | Recall | 0.8571 |
 
-### IEEE-CIS XGBoost model
+### IEEE-CIS XGBoost Model
 
-Evaluation on the project's validation split:
+Validation results at the default classification threshold of 0.5:
 
 | Metric | Score |
 |---|---:|
 | ROC-AUC | 0.8810 |
 | PR-AUC | 0.3507 |
+| Precision | 0.1583 |
+| Recall | 0.7443 |
+| F1-score | 0.2611 |
+
+A separate threshold-tuning experiment used a threshold of approximately **0.7657** and reported:
+
+| Metric | Score |
+|---|---:|
 | Precision | 0.3161 |
 | Recall | 0.4549 |
 | F1-score | 0.3730 |
 
-The selected validation threshold is approximately **0.7657**. Threshold selection affects the precision-recall trade-off.
+Changing the classification threshold affects precision, recall, and F1-score. ROC-AUC and PR-AUC remain threshold-independent ranking metrics.
 
-### Graph Neural Network experiment
+### Graph Neural Network Experiment
 
-The second GNN experiment achieved:
+The second GNN experiment (GCN v2) achieved the following validation results at the card-node level:
 
 | Metric | Score |
 |---|---:|
@@ -108,11 +138,31 @@ The second GNN experiment achieved:
 | Recall | 0.6575 |
 | F1-score | 0.4580 |
 
-### Hybrid experiment
+The GNN validation results are based on 2,979 card nodes and should not be directly compared with transaction-level XGBoost metrics.
 
-The XGBoost and GNN scores were combined experimentally. The hybrid did not outperform the XGBoost validation result in this experiment. The GNN is therefore treated as an additional research signal, not as a proven improvement.
+### Hybrid XGBoost + GNN Experiment
 
-> Metrics are dataset- and split-specific. They should not be compared as though they came from the same evaluation dataset or protocol.
+The XGBoost and GNN scores were combined experimentally using an 80% XGBoost and 20% GNN weighting.
+
+| Metric | Threshold 0.5 | Tuned threshold 0.7968 |
+|---|---:|---:|
+| Precision | 0.1105 | 0.3045 |
+| Recall | 0.8362 | 0.4546 |
+| F1-score | 0.1952 | 0.3647 |
+| PR-AUC | 0.3327 | 0.3327 |
+| ROC-AUC | 0.8749 | 0.8749 |
+
+The hybrid experiment did not outperform the tuned XGBoost validation result in this evaluation. The GNN is therefore treated as an additional experimental signal rather than a proven performance improvement.
+
+### Evaluation Notes
+
+- ULB and IEEE-CIS metrics come from different datasets and evaluation setups.
+- XGBoost and hybrid metrics are transaction-level results; GNN metrics are card-node-level results.
+- Thresholds were selected using validation data, so these results should not be treated as unbiased estimates of future performance.
+- The deployed IEEE-CIS API uses a configured threshold of approximately **0.7968** and its tested response reported the model as `IEEE-CIS-XGBoost+GNN`.
+- The Kaggle IEEE-CIS test dataset does not provide public fraud labels for direct final test evaluation.
+
+These results are experimental and intended for educational demonstration, not real-world banking decisions.
 
 ## 5. Project Structure
 
@@ -182,42 +232,94 @@ Download the dataset through Kaggle and place the extracted files in the expecte
 
 ## 7. API Usage
 
+The project provides two FastAPI-based fraud prediction APIs for the ULB and IEEE-CIS datasets.
+
 ### Original ULB API
 
-The original API uses:
+The ULB API accepts transaction features including `Time`, `V1` to `V28`, and `Amount`.
+
+Endpoint:
 
 ```text
 POST /predict
 ```
 
-Run the original API using Docker:
+Run the API:
 
 ```powershell
-docker build -t fraud-detection-api .
 docker compose up -d kafka
-docker run -d --name fraud-api -p 8000:8000 fraud-detection-api
+.\.venv-feast\Scripts\python.exe -m uvicorn src.api:app --host 127.0.0.1 --port 8000
 ```
 
 Swagger documentation:
 
 ```text
-http://localhost:8000/docs
+http://127.0.0.1:8000/docs
 ```
 
 ### IEEE-CIS API
 
-The IEEE-CIS API uses FastAPI, the XGBoost model, and Feast online features.
+The IEEE-CIS API uses FastAPI, XGBoost, Feast online features, and the configured GNN scoring integration.
 
-The API returns fields including:
+Run the API locally:
+
+```powershell
+$env:KAFKA_DISABLED="1"
+.\.venv-feast\Scripts\python.exe -m uvicorn src.ieee_api:app --host 127.0.0.1 --port 8003
+```
+
+Swagger documentation:
+
+```text
+http://127.0.0.1:8003/docs
+```
+
+#### Available endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/` | API health/status |
+| POST | `/predict` | Score a transaction and publish its prediction event when Kafka is enabled |
+
+#### Prediction request example
+
+```json
+{
+  "card_key": "10000_111.0_150.0_117.0_debit",
+  "TransactionDT": 86400,
+  "TransactionAmt": 100.0
+}
+```
+
+Required fields:
+- `card_key`
+- `TransactionDT`
+- `TransactionAmt`
+
+Additional card, address, and device fields are optional.
+
+#### Prediction response
+
+The response includes:
 - Transaction ID
 - Fraud probability
 - Decision threshold
-- Prediction and label
-- Model name
+- Prediction and classification label
+- Model identifier
 - Feature source
-- Kafka message status
+- XGBoost probability
+- GNN usage indicator
+- Kafka publishing status
 
-The API is exposed on port `8000` inside the container.
+A successful Kubernetes API test returned a fraud probability of approximately `0.0550`, a `NORMAL` prediction, Feast Online Store as the feature source, and `MESSAGE_SENT` as the Kafka status.
+
+For Kubernetes deployment, access the API through the Minikube service URL generated by:
+
+```powershell
+minikube service ieee-fraud-api --url
+```
+
+Append `/docs` to the generated URL to open Swagger documentation.
 
 ## 8. Kafka Streaming
 
@@ -256,92 +358,218 @@ The consumer receives transaction messages and displays prediction details.
 
 ## 9. Feast Feature Store
 
-Feast is used to retrieve online transaction features for the IEEE-CIS prediction API.
+Feast is used as the online feature store for the IEEE-CIS fraud prediction API. It provides consistent transaction features during model inference.
 
-The local feature store configuration is located at:
+Feature repository:
 
 ```text
-feature_repo/feature_repo/feature_store.yaml
+feature_repo/feature_repo/
 ```
 
-The feature repository contains feature definitions and local registry and online-store data.
+Important files:
+- `feature_store.yaml` – Feast configuration.
+- `feature_definitions.py` – Entity, data source, feature view, and feature service definitions.
+- `data/fraud_features.parquet` – Offline feature data.
+- Local registry and SQLite online store – Feature metadata and online feature values.
 
-The online feature view excludes the target label to avoid label leakage during inference.
+### Registered features
 
-## 10. Streamlit Dashboard
+The `card_fraud_features` feature view contains:
 
-The dashboard provides:
-- Model and prediction overview
-- Historical analyst case queue
-- Case status and feedback updates
-- Data drift monitoring
-- Kafka live transaction alerts
+| Feature | Description |
+|---|---|
+| `card_txn_count_1h` | Card transaction count over one hour |
+| `card_txn_count_24h` | Card transaction count over 24 hours |
+| `card_avg_amount_30d` | Historical average transaction amount |
+| `amount_vs_card_average` | Current amount compared with historical card average |
+| `device_changed` | Device change indicator |
+| `address_changed` | Address change indicator |
+| `device_missing` | Missing device information indicator |
 
-Run the dashboard from the project environment:
+The feature view uses `card` as its entity and `card_key` as its join key. The target fraud label is excluded from online inference features to avoid label leakage.
+
+### Apply and materialize features
+
+Run from the feature repository directory:
 
 ```powershell
-streamlit run src/dashboard.py
+cd .\feature_repo\feature_repo
+..\..\.venv-feast\Scripts\feast.exe apply
 ```
+
+Materialize available feature data into the online store:
+
+```powershell
+..\..\.venv-feast\Scripts\python.exe -c "from feast import FeatureStore; from datetime import datetime, timezone; s=FeatureStore(repo_path='.'); s.materialize_incremental(end_date=datetime.now(timezone.utc)); print('Materialization complete')"
+```
+
+The project verified:
+- Feature view registration.
+- Feature service registration (`fraud_detection_v1`).
+- Online feature materialization.
+- Online feature retrieval for a card key.
+- Feature Service retrieval.
+
+The IEEE-CIS API retrieves these features from the Feast online store during prediction. Historical records outside the materialization window may not be available in the local online store.
+
+## 10. Streamlit Analyst Dashboard
+
+The Streamlit dashboard provides a visual interface for reviewing fraud alerts, analyst cases, feature drift, and transaction network information.
+
+Run the dashboard from the project root:
+
+```powershell id="tqv8x5"
+$env:OPENBLAS_NUM_THREADS="1"
+.\.venv-feast\Scripts\python.exe -m streamlit run .\src\dashboard.py --server.port 8503
+```
+
+Open:
+
+```text id="2wjf7p"
+http://localhost:8503
+```
+
+### Dashboard modules
+
+- **Overview:** Displays model performance, drift summary, and open analyst cases.
+- **Analyst Case Queue:** Shows historical fraud cases and allows analysts to update case statuses.
+- **Data Drift:** Displays offline feature drift results and monitoring summaries.
+- **Live Kafka Fraud Alerts:** Displays transactions consumed from the `fraud-transactions` topic.
+- **Fraud Network:** Displays card-device relationships and shared-device investigation leads.
+
+### Dashboard data
+
+The analyst case queue uses historical labelled IEEE-CIS examples. Kafka alerts are collected separately from the streaming topic.
+
+Case status changes are stored locally in:
+
+```text id="by7vzf"
+reports/analyst_cases.csv
+```
+
+Kafka alert history is stored in:
+
+```text id="sc5g3p"
+reports/kafka_alerts.csv
+```
+
+The dashboard is intended for educational analyst workflow demonstration. Shared devices and network connections are investigation signals, not proof of fraud.
 
 ## 11. Data Drift Monitoring
 
-Evidently AI is used to compare training and test feature distributions.
+Evidently AI is used to monitor changes in transaction feature distributions.
 
-The monitoring report and associated JSON outputs are stored under:
+The project includes two monitoring workflows:
 
-```text
-reports/
+### Offline data drift
+
+`src/drift_monitor.py` compares training and test feature distributions.
+
+Generated reports include:
+
+```text id="qg0n3m"
+reports/ieee_data_drift_report.html
 ```
 
-The current drift analysis identified drift in a subset of monitored features. The configured aggregate drift threshold did not trigger an automatic retraining action.
+The report contains feature-level drift information and an aggregate drift summary.
 
-The retraining trigger is an indicator for review, not a fully automated retraining pipeline.
+### Live Kafka data drift
+
+`src/live_drift_monitor.py` compares reference transaction features with a sample of transactions collected from the Kafka stream.
+
+Generated outputs include:
+
+```text id="p7rvx3"
+reports/ieee_live_drift_report.html
+reports/live_retraining_trigger.json
+```
+
+The live monitoring workflow records
 
 ## 12. Docker Deployment
 
-Build the IEEE-CIS API image:
+Docker is used to package the IEEE-CIS FastAPI application and its runtime dependencies.
 
-```powershell
-docker build -f Dockerfile.ieee -t fraud-detection-ieee-api:latest .
+Build the IEEE-CIS API image inside the Minikube Docker environment:
+
+```powershell id="p85qhw"
+minikube image build -t fraud-detection-ieee-api:latest -f Dockerfile.ieee .
 ```
 
-The image contains:
-- IEEE-CIS API code
-- XGBoost model artifacts
-- Feast feature definitions and local store data
-- Python runtime dependencies
+Verify the image:
 
-## 13. Kubernetes Deployment (Docker Desktop)
+```powershell id="x6cs2a"
+minikube image ls | Select-String "fraud-detection-ieee-api"
+```
 
-Verified on a local Docker Desktop Kubernetes cluster (context: `docker-desktop`).
+The `Dockerfile.ieee` image includes:
+- IEEE-CIS FastAPI application code.
+- XGBoost model artifacts.
+- Feast feature definitions and local feature-store data.
+- Python runtime dependencies.
 
-    docker compose up -d kafka
-    docker build -f Dockerfile.ieee -t fraud-detection-ieee-api:latest .
-    kubectl apply -f k8s/ieee-deployment.yaml
-    kubectl rollout status deployment/ieee-fraud-api
-    curl.exe http://localhost:30082/
+The image exposes port `8000` and starts the API using Uvicorn.
 
-The manifest uses `imagePullPolicy: Never`, so the image must exist in the local
-Docker daemon. NodePort `30082` maps to container port `8000`. The pod reaches Kafka
-at `host.docker.internal:9093`. This is a local deployment, not a public cloud URL.
+The Kubernetes manifest uses `imagePullPolicy: Never`, so the image must be available in Minikube before the deployment is started.
+
+Kafka runs separately through Docker Compose:
+
+```powershell id="p5s2v0"
+docker compose up -d kafka
+```
+
+This is a local demonstration setup. The container image and services are not deployed to a public cloud environment.
+
+## 13. Kubernetes Deployment (Minikube)
+
+The IEEE-CIS Fraud Detection API was successfully deployed and tested on a local Minikube cluster using the Docker driver.
+
+Build the image inside Minikube:
+
+```powershell
+minikube image build -t fraud-detection-ieee-api:latest -f Dockerfile.ieee .
+```
+
+Apply the Kubernetes deployment and service:
+
+```powershell
+kubectl apply -f k8s/ieee-deployment.yaml
+kubectl rollout status deployment/ieee-fraud-api
+kubectl get pods
+kubectl get services
+```
+
+Expose the service locally:
+
+```powershell
+minikube service ieee-fraud-api --url
+```
+
+Keep the terminal running while using the generated local service URL. Open `/docs` to access the FastAPI Swagger interface.
+
+The deployment uses `imagePullPolicy: Never`, so the image must already exist in Minikube's local image environment. The Kubernetes Service exposes container port `8000` through NodePort `30082`. The API connects to Kafka at `host.docker.internal:9093`.
+
+The Kubernetes API prediction endpoint was tested successfully. A test transaction was scored using Feast online features and the XGBoost + GNN scoring integration, and its corresponding event was verified in the Kafka `fraud-transactions` topic.
+
+This is a local demonstration deployment, not a public cloud deployment.
+
 ## 14. Important Limitations
 
-- Metrics in `models/ieee_cis/metrics.json` are at threshold 0.5 (PR-AUC 0.351, ROC-AUC 0.881, recall 74%, precision 16%). The API uses a tuned threshold of 0.7657 (precision 31.6%, recall 45.5%, F1 0.373).
-- The Live Kafka Alerts page shows transactions consumed while the dashboard is open. The demo feed replays IEEE-CIS test rows (the test set has no labels).
-- The 85% drift figure from the live monitor is computed on streamed data that includes manual test and replay records. It demonstrates the trigger, not real production drift.
-- Retraining is gated on labelled data. The production model is never replaced automatically; candidate evaluation and promotion are not verified end to end.
-- GNN weights (`*.pt`) are not packaged in the API image. The API scores with XGBoost + Feast. The XGBoost + GNN blend was evaluated offline and did not outperform XGBoost alone; GNN and hybrid results are experimental.
-- GNN metrics (e.g. v2: AP 0.575, ROC-AUC 0.850) are card-node level on 2,979 validation cards and are not directly comparable to the transaction-level XGBoost PR-AUC (0.351). The first GNN attempt (v1) did not learn (ROC-AUC 0.5); v2 improved on it.
-- The XGBoost training run (params, metrics, artifacts) is tracked in MLflow by `src/train_ieee_model.py`. GNN, hybrid and threshold summary metrics were logged afterwards from saved JSON files (`scripts/log_mlflow_runs.py`).
-- Kubernetes was verified on Docker Desktop. Minikube was not used for the final deployment.
-- This is an educational prototype, not a production banking system.
+- Metrics in `models/ieee_cis/metrics.json` are measured at threshold 0.5 (PR-AUC 0.351, ROC-AUC 0.881, recall 74.4%, precision 15.8%). The API uses a tuned threshold of approximately 0.7968.
+- At the tuned XGBoost validation threshold, precision is approximately 30.4%, recall 45.5%, and F1-score 0.365 for the hybrid validation experiment. The standalone XGBoost threshold result is precision 31.6%, recall 45.5%, and F1-score 0.373.
+- The Live Kafka Alerts dashboard displays messages consumed from the Kafka topic. The demo feed may include replayed and manually generated transactions; it should not be interpreted as a real-world fraud stream.
+- Live drift results depend on the streamed sample, including manual test and replay records. They demonstrate monitoring and trigger behavior, not confirmed production drift.
+- Retraining is gated on confirmed labelled data. The orchestrator was verified in `NO_ACTION` and `WAITING_FOR_LABELS` states. A separate historical-data candidate backtest completed and passed its configured quality gate; this is a pipeline test, not live-labelled retraining or independent validation. Production promotion was not performed.
+- The API's XGBoost + GNN scoring integration was exercised successfully, and the response reported `gnn_used: true`. The GNN experiment also has separately saved model artifacts. The trained GNN weights are not packaged as a standalone model in the API image; the API integration uses the available card-level GNN score data. The hybrid approach did not outperform tuned XGBoost in the validation experiment.
+- GNN metrics (v2: Average Precision 0.575, ROC-AUC 0.850) are card-node-level results on 2,979 validation cards. They are not directly comparable to transaction-level XGBoost metrics.
+- The XGBoost training run is tracked in MLflow by `src/train_ieee_model.py`. Additional GNN and hybrid experiment results are available in saved metrics and MLflow logging outputs.
+- Kubernetes deployment was verified using Minikube with the Docker driver, not Docker Desktop Kubernetes.
+- The local Feast SQLite configuration is intended for this educational project, not a production multi-instance feature-store architecture.
+- Kafka events from both project APIs share the `fraud-transactions` topic. Consumers should identify the dataset and model fields in each message.
 - Dataset anonymization limits the interpretation of some features.
-- Validation metrics do not guarantee performance on future transactions.
-- Fraud thresholds must be selected according to operational requirements.
-- The GNN and hybrid results are experimental.
-- Drift detection does not automatically retrain or redeploy the model.
-- The local Feast SQLite configuration is intended for this project setup, not as a production multi-instance feature-store architecture.
-- Kafka events are currently published to a shared topic by the two project APIs; consumers should identify the dataset/model fields in each message.
+- Validation metrics do not guarantee performance on future transactions. Thresholds should be selected according to operational requirements.
+- Drift detection does not automatically retrain or redeploy the production model.
+- This project is an educational prototype, not a production banking system.
 
 ## 15. Future Improvements
 
@@ -386,24 +614,69 @@ Open http://127.0.0.1:5001, switch to Model training, open the `IEEE-CIS-Fraud-D
 
 ## 18. Running the Demo
 
-Run every command from the project root.
+Run commands from the project root in separate PowerShell terminals.
+
+### Start Kafka
 
 ```powershell
 docker compose up -d kafka
-kubectl get pods
-# API docs: http://localhost:30082/docs
-
-# Window A: consumer
-.\.venv\Scripts\python.exe -m src.ieee_kafka_consumer
-
-# Window B: dashboard (http://localhost:8501)
-.\.venv\Scripts\python.exe -m streamlit run src\dashboard.py
-
-# Window C: replay labelled transactions
-.\.venv\Scripts\python.exe scripts\replay_fraud_demo.py --fraud 10 --legit 40 --delay 1
 ```
 
-`replay_fraud_demo.py` samples the latest 118,108 labelled rows of `train_features.csv` and mixes known fraud and legitimate transactions so alerts appear. The demo stream is fraud-enriched and is not a realistic fraud rate.
+### Check Kubernetes deployment
+
+```powershell
+kubectl get pods
+kubectl get services
+```
+
+Expose the API locally:
+
+```powershell
+minikube service ieee-fraud-api --url
+```
+
+Keep this terminal open while using the generated URL.
+
+API Swagger documentation:
+
+```text
+<generated-minikube-service-url>/docs
+```
+
+### Start the Kafka consumer
+
+In a separate terminal:
+
+```powershell
+.\.venv-feast\Scripts\python.exe -m src.ieee_kafka_consumer
+```
+
+### Start the Streamlit dashboard
+
+In another terminal:
+
+```powershell
+$env:OPENBLAS_NUM_THREADS="1"
+.\.venv-feast\Scripts\python.exe -m streamlit run .\src\dashboard.py --server.port 8503
+```
+
+Dashboard URL:
+
+```text
+http://localhost:8503
+```
+
+### Test a transaction
+
+Open the API Swagger page, select `POST /predict`, and submit a valid IEEE-CIS transaction request.
+
+Verify that:
+- The API returns a fraud probability and prediction.
+- The response identifies the feature source as Feast Online Store.
+- The Kafka message is published to `fraud-transactions`.
+- The Kafka consumer receives the transaction event.
+
+The demo uses local Docker, Minikube, and Kafka services. Keep the required services running during the demonstration.
 
 ## 19. Tests
 
@@ -413,23 +686,57 @@ kubectl get pods
 
 Seven tests pass.
 
-## 20. Monitoring and Retraining Gate
+## 20. Monitoring and Retraining Verification
 
-| Check | Compares | Output |
-|---|---|---|
-| `src/drift_monitor.py` | train vs test split | `reports/ieee_data_drift_report.html` |
-| `src/live_drift_monitor.py` | train vs last 1,000 Kafka-streamed transactions | `reports/ieee_live_drift_report.html`, `reports/live_retraining_trigger.json` |
+The project includes offline drift monitoring, live Kafka drift monitoring, and a retraining orchestration workflow.
 
-The live monitor excludes the raw timestamp and card/address identifier columns, which drift by construction. It needs Evidently, which is installed in `.venv-feast`:
+### Verification results
+
+| Component | Observed result |
+|---|---|
+| Offline Evidently report | 3 of 20 features drifted (15%) |
+| Offline drift decision | `NO_ACTION` |
+| Live drift trigger | 50% drift share |
+| Live drift decision | Retraining review requested |
+| Retraining orchestrator | `WAITING_FOR_LABELS` |
+| Labelled incoming data | Not available for candidate training |
+| Production model promotion | Not performed |
+
+### Run live drift monitoring
+
+From the project root:
 
 ```powershell
-.\.venv-feast\Scripts\python.exe src\live_drift_monitor.py
-.\.venv\Scripts\python.exe src\retraining_orchestrator.py
+.\.venv-feast\Scripts\python.exe .\src\live_drift_monitor.py
 ```
 
-The drift share depends on the sample, so a result is a prompt to review, not proof that the model degraded. The orchestrator waits for at least 1,000 confirmed labelled rows (`WAITING_FOR_LABELS`), only trains a candidate model, and never changes the production model.
+### Run retraining orchestration
 
-The dashboard Data Drift page shows the offline train-vs-test report. Live stream drift is written to `reports/live_retraining_trigger.json`.
+```powershell
+.\.venv-feast\Scripts\python.exe .\src\retraining_orchestrator.py
+```
+
+### Retraining data requirement
+
+The orchestrator checks:
+
+```text
+data/ieee_cis/incoming/labelled_transactions.csv
+```
+
+At least 1,000 valid labelled transactions containing both classes are required before candidate training can begin.
+
+The current live workflow safely waits for confirmed labels instead of automatically retraining on unlabelled streaming data. The latest orchestrator result was `WAITING_FOR_LABELS`: drift share 50%, threshold 50%, no incoming labelled file, and no production model change.
+
+A separate historical-data backtest of the candidate trainer completed using 472,432 training rows and 118,108 validation rows. Its quality gate passed, but candidate and baseline metrics were identical (PR-AUC 0.350733, ROC-AUC 0.881013, precision 0.316073, recall 0.454875, F1 0.372979). This verifies that the candidate-training pipeline can run; it does not demonstrate model improvement or independent generalisation because the backtest uses the existing labelled dataset and its established split. The candidate was not promoted.
+
+Candidate ID: `20261118T155321Z`  
+MLflow run ID: `af62825f93b144d194eb1f9668055fbf`
+
+The production model was not changed. Current model SHA-256 reference:
+`980AB4A90F9AAC66BD812D0E9979144EFC8673D9916CA6AC5E00CCBBA0CD58D5`
+
+The offline drift report and live drift trigger use different inputs and monitoring runs; their results should not be interpreted as contradictory.
 
 ## 21. Architecture Diagram
 

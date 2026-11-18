@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 import json
 import uuid
 
@@ -23,7 +23,7 @@ model.load_model(str(MODEL_PATH))
 
 # Connect to Kafka
 producer = KafkaProducer(
-    bootstrap_servers=["host.docker.internal:9093"],
+    bootstrap_servers=["localhost:9092"],
     value_serializer=lambda value: json.dumps(value).encode("utf-8")
 )
 

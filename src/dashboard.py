@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 import json
 from datetime import datetime
 
@@ -22,6 +22,7 @@ TRAIN_FILE = DATA_DIR / "train_features.csv"
 CASE_FILE = REPORTS_DIR / "analyst_cases.csv"
 DRIFT_FILE = REPORTS_DIR / "retraining_trigger.json"
 METRICS_FILE = MODEL_DIR / "metrics.json"
+ALERT_FILE = REPORTS_DIR / "kafka_alerts.csv"
 
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -112,8 +113,8 @@ def get_dashboard_consumer():
     return KafkaConsumer(
         "fraud-transactions",
         bootstrap_servers=["localhost:9092"],
-        group_id="streamlit-live-alerts",
-        auto_offset_reset="latest",
+        group_id="streamlit-live-alerts-history-v2",
+        auto_offset_reset="earliest",
         enable_auto_commit=True,
         value_deserializer=lambda value: json.loads(
             value.decode("utf-8")
@@ -123,21 +124,26 @@ def get_dashboard_consumer():
 
 
 def read_live_alerts():
-    consumer = get_dashboard_consumer()
-
     if "live_alerts" not in st.session_state:
-        st.session_state.live_alerts = []
+        if ALERT_FILE.exists():
+            try:
+                st.session_state.live_alerts = (
+                    pd.read_csv(ALERT_FILE).to_dict("records")
+                )
+            except (OSError, pd.errors.EmptyDataError):
+                st.session_state.live_alerts = []
+        else:
+            st.session_state.live_alerts = []
 
-    messages = consumer.poll(
-        timeout_ms=500,
-        max_records=50,
-    )
+    consumer = get_dashboard_consumer()
+    messages = consumer.poll(timeout_ms=500, max_records=50)
+
+    new_alerts = []
 
     for records in messages.values():
         for message in records:
             transaction = message.value
-
-            st.session_state.live_alerts.append({
+            new_alerts.append({
                 "Received At": datetime.now().strftime(
                     "%Y-%m-%d %H:%M:%S"
                 ),
@@ -150,12 +156,16 @@ def read_live_alerts():
                 "Label": transaction.get("label"),
             })
 
-    st.session_state.live_alerts = (
-        st.session_state.live_alerts[-500:]
-    )
+    if new_alerts:
+        pd.DataFrame(new_alerts).to_csv(
+            ALERT_FILE,
+            mode="a",
+            header=not ALERT_FILE.exists(),
+            index=False,
+        )
+        st.session_state.live_alerts.extend(new_alerts)
 
 
-# --------------------------------------------------
 # Load monitoring information
 # --------------------------------------------------
 
@@ -500,12 +510,13 @@ elif page == "Fraud Network":
 
         card_columns = ["card1", "card2", "card3", "card5", "card6"]
 
-        df["card_key"] = (
-            df[card_columns]
-            .astype("string")
-            .fillna("missing")
-            .agg("_".join, axis=1)
-        )
+        card_key = df[card_columns[0]].astype("string").fillna("missing")
+        for column in card_columns[1:]:
+            card_key = card_key.str.cat(
+                df[column].astype("string").fillna("missing"),
+                sep="_"
+            )
+        df["card_key"] = card_key
 
         missing_card = df["card1"].isna()
         df.loc[missing_card, "card_key"] = (

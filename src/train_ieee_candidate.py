@@ -1,5 +1,6 @@
-
+﻿
 from pathlib import Path
+import os
 from datetime import datetime, timezone
 import json
 
@@ -25,12 +26,15 @@ ROOT = Path(__file__).resolve().parents[1]
 MODEL_DIR = ROOT / "models" / "ieee_cis"
 CANDIDATE_ROOT = MODEL_DIR / "candidates"
 
+BACKTEST_MODE = os.getenv("CANDIDATE_BACKTEST", "0") == "1"
+
 INCOMING_FILE = (
-    ROOT / "data" / "ieee_cis" / "incoming"
-    / "labelled_transactions.csv"
+    ROOT / "data" / "ieee_cis" / "processed" / "train_features.csv"
+    if BACKTEST_MODE
+    else ROOT / "data" / "ieee_cis" / "incoming" / "labelled_transactions.csv"
 )
 
-TRIGGER_FILE = ROOT / "reports" / "retraining_trigger.json"
+TRIGGER_FILE = ROOT / "reports" / "live_retraining_trigger.json"
 
 MLFLOW_DB = ROOT / "mlflow.db"
 mlflow.set_tracking_uri(
@@ -98,6 +102,7 @@ def prepare_features(frame, numeric_cols, categorical_cols,
 def main():
 
     print("Checking retraining eligibility...")
+    print("MODE:", "BACKTEST - existing labelled dataset" if BACKTEST_MODE else "LIVE - incoming confirmed labels")
 
     if not TRIGGER_FILE.exists():
         raise FileNotFoundError("Drift trigger file not found.")

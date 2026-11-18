@@ -1,0 +1,41 @@
+﻿<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Real-Time Fraud Detection</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:900px;margin:30px auto;padding:0 16px;color:#1a1a1a}
+h1{font-size:22px} .card{border:1px solid #ddd;border-radius:10px;padding:16px;margin:16px 0}
+label{display:block;margin:8px 0 2px;font-size:13px} input{padding:6px;width:100%;box-sizing:border-box}
+button{margin-top:12px;padding:8px 16px;cursor:pointer}
+.FRAUD{color:#b00020;font-weight:700} .NORMAL{color:#0a7d33;font-weight:700}
+table{width:100%;border-collapse:collapse;font-size:13px} td,th{border-bottom:1px solid #eee;padding:6px;text-align:left}
+pre{background:#f6f6f6;padding:10px;overflow:auto}
+</style></head><body>
+<h1>Real-Time Financial Fraud Detection</h1>
+<p id="status">Checking backend...</p>
+<div class="card"><h3>Score a transaction</h3>
+<label>Card key</label><input id="card" value="card_demo_001">
+<label>TransactionDT (seconds)</label><input id="dt" value="86400">
+<label>TransactionAmt</label><input id="amt" value="150">
+<button onclick="score()">Predict</button>
+<div id="result"></div></div>
+<div class="card"><h3>Recent predictions (this session)</h3>
+<table><thead><tr><th>Time</th><th>Card</th><th>Amount</th><th>Probability</th><th>Label</th></tr></thead>
+<tbody id="rows"></tbody></table></div>
+<script src="config.js"></script>
+<script>
+const rows=[];
+fetch(API_URL+"/").then(r=>r.json()).then(j=>status.textContent="Backend: "+j.message).catch(()=>status.textContent="Backend not reachable");
+async function score(){
+  const body={card_key:card.value,TransactionDT:+dt.value,TransactionAmt:+amt.value};
+  result.innerHTML="Scoring...";
+  try{
+    const r=await fetch(API_URL+"/predict",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(!r.ok) throw new Error(await r.text());
+    const j=await r.json();
+    result.innerHTML=`<p>Label: <span class="${j.label}">${j.label}</span> | Probability: ${j.fraud_probability.toFixed(4)} | Threshold: ${j.threshold.toFixed(4)}</p><pre>${JSON.stringify(j,null,2)}</pre>`;
+    rows.unshift(`<tr><td>${new Date().toLocaleTimeString()}</td><td>${body.card_key}</td><td>${body.TransactionAmt}</td><td>${j.fraud_probability.toFixed(4)}</td><td class="${j.label}">${j.label}</td></tr>`);
+    document.getElementById("rows").innerHTML=rows.slice(0,20).join("");
+  }catch(e){result.innerHTML="<pre>Error: "+e.message+"</pre>";}
+}
+</script></body></html>

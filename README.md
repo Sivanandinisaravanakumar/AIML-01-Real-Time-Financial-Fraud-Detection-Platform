@@ -356,3 +356,86 @@ at `host.docker.internal:9093`. This is a local deployment, not a public cloud U
 ## 16. Disclaimer
 
 This project was developed for educational and capstone demonstration purposes. Predictions must not be used as the sole basis for approving, declining, or investigating real financial transactions.
+
+
+## 17. Experiment Comparison (MLflow, validation split)
+
+| Run | Threshold | Precision | Recall | F1 | PR-AUC | ROC-AUC |
+|---|---|---|---|---|---|---|
+| XGBoost baseline | 0.50 | 0.158 | 0.744 | 0.261 | 0.351 | 0.881 |
+| XGBoost tuned threshold | 0.766 | 0.316 | 0.455 | 0.373 | 0.351 | 0.881 |
+| Hybrid XGBoost + GNN | 0.50 | 0.111 | 0.836 | 0.195 | 0.333 | 0.875 |
+| Hybrid XGBoost + GNN | 0.797 | 0.304 | 0.455 | 0.365 | 0.333 | 0.875 |
+| GCN v2 (card nodes) | - | 0.351 | 0.658 | 0.458 | 0.575 | 0.850 |
+| GCN v1 (card nodes) | - | 0.000 | 0.000 | 0.000 | 0.123 | 0.500 |
+
+- Moving the XGBoost threshold from 0.5 to 0.766 roughly doubled precision (0.158 to 0.316), lowered recall (0.744 to 0.455) and raised F1 (0.261 to 0.373).
+- The hybrid blend did not beat tuned XGBoost (F1 0.365 vs 0.373), so only XGBoost is served by the API.
+- GCN rows use 2,979 card nodes. XGBoost and hybrid use 118,108 validation transactions, so GCN numbers are not directly comparable.
+- GCN v1 collapsed to predicting no fraud.
+- Thresholds were selected on the validation set, so the numbers are optimistic. The Kaggle test file has no labels.
+
+Log the saved outputs into MLflow and open the UI:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\log_mlflow_runs.py
+.\.venv\Scripts\python.exe -m mlflow ui --backend-store-uri sqlite:///mlflow_ieee.db --host 127.0.0.1 --port 5001
+```
+
+Open http://127.0.0.1:5001, switch to Model training, open the `IEEE-CIS-Fraud-Detection` experiment and compare runs. Running the logging script twice adds duplicate runs.
+
+## 18. Running the Demo
+
+Run every command from the project root.
+
+```powershell
+docker compose up -d kafka
+kubectl get pods
+# API docs: http://localhost:30082/docs
+
+# Window A: consumer
+.\.venv\Scripts\python.exe -m src.ieee_kafka_consumer
+
+# Window B: dashboard (http://localhost:8501)
+.\.venv\Scripts\python.exe -m streamlit run src\dashboard.py
+
+# Window C: replay labelled transactions
+.\.venv\Scripts\python.exe scripts\replay_fraud_demo.py --fraud 10 --legit 40 --delay 1
+```
+
+`replay_fraud_demo.py` samples the latest 118,108 labelled rows of `train_features.csv` and mixes known fraud and legitimate transactions so alerts appear. The demo stream is fraud-enriched and is not a realistic fraud rate.
+
+## 19. Tests
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests -q
+```
+
+Seven tests pass.
+
+## 20. Monitoring and Retraining Gate
+
+| Check | Compares | Output |
+|---|---|---|
+| `src/drift_monitor.py` | train vs test split | `reports/ieee_data_drift_report.html` |
+| `src/live_drift_monitor.py` | train vs last 1,000 Kafka-streamed transactions | `reports/ieee_live_drift_report.html`, `reports/live_retraining_trigger.json` |
+
+The live monitor excludes the raw timestamp and card/address identifier columns, which drift by construction. It needs Evidently, which is installed in `.venv-feast`:
+
+```powershell
+.\.venv-feast\Scripts\python.exe src\live_drift_monitor.py
+.\.venv\Scripts\python.exe src\retraining_orchestrator.py
+```
+
+The drift share depends on the sample, so a result is a prompt to review, not proof that the model degraded. The orchestrator waits for at least 1,000 confirmed labelled rows (`WAITING_FOR_LABELS`), only trains a candidate model, and never changes the production model.
+
+The dashboard Data Drift page shows the offline train-vs-test report. Live stream drift is written to `reports/live_retraining_trigger.json`.
+
+## 21. Architecture Diagram
+
+See [docs/architecture.md](docs/architecture.md).
+
+## 22. Additional Limitations
+
+- The GNN and hybrid are offline experiments and are not served by the API.
+- The Kaggle test file has no labels, so final metrics need an independent labelled split.

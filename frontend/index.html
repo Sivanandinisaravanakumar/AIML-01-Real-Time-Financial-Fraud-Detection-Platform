@@ -25,7 +25,7 @@ pre{background:#f6f6f6;padding:10px;overflow:auto}
 <script src="config.js"></script>
 <script>
 const rows=[];
-fetch(API_URL+"/").then(r=>r.json()).then(j=>status.textContent="Backend: "+j.message).catch(()=>status.textContent="Backend not reachable");
+fetch(API_URL+"/").then(r=>r.json()).then(j=>document.getElementById("status").textContent="Backend: "+j.message).catch(()=>document.getElementById("status").textContent="Backend not reachable");
 async function score(){
   const body={card_key:card.value,TransactionDT:+dt.value,TransactionAmt:+amt.value};
   result.innerHTML="Scoring...";
@@ -39,3 +39,4 @@ async function score(){
   }catch(e){result.innerHTML="<pre>Error: "+e.message+"</pre>";}
 }
 </script></body></html>
+

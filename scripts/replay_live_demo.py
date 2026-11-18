@@ -9,8 +9,8 @@ CSV_PATH = Path("data/ieee_cis/processed/test_features.csv")
 API_URL = "http://localhost:30082/predict"
 OUTPUT_PATH = Path("data/ieee_cis/incoming/replay_results.jsonl")
 
-BATCH_SIZE = 100
-DELAY_SECONDS = 1.0
+BATCH_SIZE = 1500
+DELAY_SECONDS = 0.2
 
 columns = [
     "TransactionID", "TransactionDT", "TransactionAmt",

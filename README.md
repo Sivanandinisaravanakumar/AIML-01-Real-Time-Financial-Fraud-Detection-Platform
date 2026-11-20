@@ -1,4 +1,4 @@
-﻿# AI-Based Credit Card Fraud Detection System
+# AI-Based Credit Card Fraud Detection System
 
 An end-to-end machine learning capstone project for credit card fraud detection using traditional ML, real-time streaming, feature stores, model monitoring, and containerized deployment.
 
@@ -76,7 +76,7 @@ MLflow is used to track IEEE-CIS XGBoost training experiments, parameters, and e
 Start the MLflow UI from the project root:
 
 ```powershell
-.\.venv-feast\Scripts\python.exe -m mlflow ui --backend-store-uri sqlite:///mlflow.db --host 127.0.0.1 --port 5000
+.\.venv\Scripts\python.exe -m mlflow ui --backend-store-uri sqlite:///mlflow.db --host 127.0.0.1 --port 5000
 ```
 
 Open the UI at:
@@ -248,7 +248,7 @@ Run the API:
 
 ```powershell
 docker compose up -d kafka
-.\.venv-feast\Scripts\python.exe -m uvicorn src.api:app --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe -m uvicorn src.ieee_api:app --host 127.0.0.1 --port 8000
 ```
 
 Swagger documentation:
@@ -265,7 +265,7 @@ Run the API locally:
 
 ```powershell
 $env:KAFKA_DISABLED="1"
-.\.venv-feast\Scripts\python.exe -m uvicorn src.ieee_api:app --host 127.0.0.1 --port 8003
+.\.venv\Scripts\python.exe -m uvicorn src.ieee_api:app --host 127.0.0.1 --port 8003
 ```
 
 Swagger documentation:
@@ -394,13 +394,13 @@ Run from the feature repository directory:
 
 ```powershell
 cd .\feature_repo\feature_repo
-..\..\.venv-feast\Scripts\feast.exe apply
+..\..\.venv\Scripts\feast.exe apply
 ```
 
 Materialize available feature data into the online store:
 
 ```powershell
-..\..\.venv-feast\Scripts\python.exe -c "from feast import FeatureStore; from datetime import datetime, timezone; s=FeatureStore(repo_path='.'); s.materialize_incremental(end_date=datetime.now(timezone.utc)); print('Materialization complete')"
+..\..\.venv\Scripts\python.exe -c "from feast import FeatureStore; from datetime import datetime, timezone; s=FeatureStore(repo_path='.'); s.materialize_incremental(end_date=datetime.now(timezone.utc)); print('Materialization complete')"
 ```
 
 The project verified:
@@ -420,7 +420,7 @@ Run the dashboard from the project root:
 
 ```powershell id="tqv8x5"
 $env:OPENBLAS_NUM_THREADS="1"
-.\.venv-feast\Scripts\python.exe -m streamlit run .\src\dashboard.py --server.port 8503
+.\.venv\Scripts\python.exe -m streamlit run .\src\dashboard.py --server.port 8503
 ```
 
 Open:
@@ -648,7 +648,7 @@ API Swagger documentation:
 In a separate terminal:
 
 ```powershell
-.\.venv-feast\Scripts\python.exe -m src.ieee_kafka_consumer
+.\.venv\Scripts\python.exe -m src.ieee_kafka_consumer
 ```
 
 ### Start the Streamlit dashboard
@@ -657,7 +657,7 @@ In another terminal:
 
 ```powershell
 $env:OPENBLAS_NUM_THREADS="1"
-.\.venv-feast\Scripts\python.exe -m streamlit run .\src\dashboard.py --server.port 8503
+.\.venv\Scripts\python.exe -m streamlit run .\src\dashboard.py --server.port 8503
 ```
 
 Dashboard URL:
@@ -707,13 +707,13 @@ The project includes offline drift monitoring, live Kafka drift monitoring, and 
 From the project root:
 
 ```powershell
-.\.venv-feast\Scripts\python.exe .\src\live_drift_monitor.py
+.\.venv\Scripts\python.exe .\src\live_drift_monitor.py
 ```
 
 ### Run retraining orchestration
 
 ```powershell
-.\.venv-feast\Scripts\python.exe .\src\retraining_orchestrator.py
+.\.venv\Scripts\python.exe .\src\retraining_orchestrator.py
 ```
 
 ### Retraining data requirement
@@ -752,4 +752,3 @@ See [docs/architecture.md](docs/architecture.md).
 Frontend: https://aiml-01-real-time-financial-fraud-d.vercel.app/
 
 The frontend is a static page hosted on Vercel. It calls the FastAPI backend running on a local Docker Desktop Kubernetes cluster, exposed through a temporary Cloudflare tunnel, so it works only while the demo machine is on. The permanent code is in the GitHub repository.
-

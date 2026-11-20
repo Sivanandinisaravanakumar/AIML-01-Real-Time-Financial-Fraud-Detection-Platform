@@ -1,4 +1,4 @@
-﻿
+
 import json
 from pathlib import Path
 from datetime import datetime, timezone
@@ -33,7 +33,7 @@ try:
         transaction = message.value
 
         # Ignore messages from other models sharing this topic.
-        if transaction.get("model") != "IEEE-CIS-XGBoost":
+        if transaction.get("model") not in ("IEEE-CIS-XGBoost", "IEEE-CIS-XGBoost+GNN"):
             continue
 
         features = transaction.get("features")
@@ -43,6 +43,7 @@ try:
             continue
 
         record = {
+            "model": transaction.get("model"),
             "transaction_id": transaction.get("transaction_id"),
             "observed_at_utc": datetime.now(
                 timezone.utc

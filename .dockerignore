@@ -8,3 +8,9 @@ mlflow.db
 data/
 tests/
 *.txt.txt
+
+# Local runtime files
+*.log
+mlflow_portable.db
+mlruns_portable/
+models/ieee_cis/candidates/

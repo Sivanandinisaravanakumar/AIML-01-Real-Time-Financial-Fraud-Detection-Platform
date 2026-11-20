@@ -1,3 +1,4 @@
+
 from pathlib import Path
 import json
 from datetime import datetime
@@ -23,6 +24,12 @@ CASE_FILE = REPORTS_DIR / "analyst_cases.csv"
 DRIFT_FILE = REPORTS_DIR / "retraining_trigger.json"
 METRICS_FILE = MODEL_DIR / "metrics.json"
 ALERT_FILE = REPORTS_DIR / "kafka_alerts.csv"
+
+# Complete transaction stream
+STREAM_FILE = (
+    ROOT / "data" / "ieee_cis" / "incoming"
+    / "streamed_transactions.jsonl"
+)
 
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -104,6 +111,80 @@ def save_cases(edited_cases):
     temp_file.replace(CASE_FILE)
 
 
+def safe_number(value):
+    """Convert a value to a number, returning None if invalid."""
+    if value is None:
+        return None
+
+    try:
+        if pd.isna(value):
+            return None
+
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def normalize_alert(transaction, source="Unknown"):
+    """Convert JSONL or Kafka records to one dashboard format."""
+
+    prediction = safe_number(transaction.get("Prediction"))
+    if prediction is None:
+        prediction = safe_number(transaction.get("prediction"))
+
+    if prediction is not None:
+        prediction = int(prediction)
+
+    label = transaction.get("Label")
+    if label is None or pd.isna(label):
+        label = transaction.get("label")
+
+    if label is None or pd.isna(label):
+        if prediction == 1:
+            label = "FRAUD"
+        elif prediction == 0:
+            label = "NORMAL"
+        else:
+            label = "UNKNOWN"
+
+    model = transaction.get("Model")
+    if model is None or pd.isna(model):
+        model = transaction.get("model")
+
+    if model is None or pd.isna(model):
+        model = source
+
+    return {
+        "Received At": (
+            transaction.get("Received At")
+            or transaction.get("observed_at_utc")
+        ),
+        "Transaction ID": (
+            transaction.get("Transaction ID")
+            or transaction.get("transaction_id")
+        ),
+        "Fraud Probability": safe_number(
+            transaction.get(
+                "Fraud Probability",
+                transaction.get("fraud_probability"),
+            )
+        ),
+        "Threshold": safe_number(
+            transaction.get(
+                "Threshold",
+                transaction.get("threshold"),
+            )
+        ),
+        "Prediction": prediction,
+        "Label": label,
+        "Model": model,
+        "Actual Fraud": transaction.get(
+            "Actual Fraud",
+            transaction.get("actual_isFraud"),
+        ),
+    }
+
+
 # --------------------------------------------------
 # Kafka Consumer
 # --------------------------------------------------
@@ -124,48 +205,163 @@ def get_dashboard_consumer():
 
 
 def read_live_alerts():
-    if "live_alerts" not in st.session_state:
-        if ALERT_FILE.exists():
-            try:
-                st.session_state.live_alerts = (
-                    pd.read_csv(ALERT_FILE).to_dict("records")
-                )
-            except (OSError, pd.errors.EmptyDataError):
-                st.session_state.live_alerts = []
-        else:
-            st.session_state.live_alerts = []
 
-    consumer = get_dashboard_consumer()
-    messages = consumer.poll(timeout_ms=500, max_records=50)
+    all_alerts = []
+
+    # --------------------------------------------------
+    # 1. Read complete JSONL transaction history
+    # --------------------------------------------------
+
+    if STREAM_FILE.exists():
+        try:
+            with STREAM_FILE.open(
+                "r",
+                encoding="utf-8",
+            ) as file:
+
+                for line in file:
+                    if not line.strip():
+                        continue
+
+                    try:
+                        transaction = json.loads(line)
+
+                        all_alerts.append(
+                            normalize_alert(
+                                transaction,
+                                source="Legacy/Unknown",
+                            )
+                        )
+
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+
+        except OSError as error:
+            st.warning(
+                f"Could not read transaction stream: {error}"
+            )
+
+    # --------------------------------------------------
+    # 2. Read previously saved Kafka CSV history
+    # --------------------------------------------------
+
+    if ALERT_FILE.exists():
+        try:
+            csv_df = pd.read_csv(ALERT_FILE)
+
+            for transaction in csv_df.to_dict("records"):
+                all_alerts.append(
+                    normalize_alert(
+                        transaction,
+                        source="Kafka/Legacy",
+                    )
+                )
+
+        except (
+            OSError,
+            pd.errors.EmptyDataError,
+            pd.errors.ParserError,
+        ):
+            pass
+
+    # --------------------------------------------------
+    # 3. Read new Kafka messages
+    # --------------------------------------------------
 
     new_alerts = []
 
-    for records in messages.values():
-        for message in records:
-            transaction = message.value
-            new_alerts.append({
-                "Received At": datetime.now().strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                ),
-                "Transaction ID": transaction.get("transaction_id"),
-                "Fraud Probability": transaction.get(
-                    "fraud_probability"
-                ),
-                "Threshold": transaction.get("threshold"),
-                "Prediction": transaction.get("prediction"),
-                "Label": transaction.get("label"),
-            })
+    try:
+        consumer = get_dashboard_consumer()
+
+        messages = consumer.poll(
+            timeout_ms=500,
+            max_records=50,
+        )
+
+        for records in messages.values():
+            for message in records:
+
+                transaction = message.value
+
+                alert = normalize_alert(
+                    transaction,
+                    source="Kafka",
+                )
+
+                # Keep the Kafka receipt time for new messages
+                if not alert["Received At"]:
+                    alert["Received At"] = datetime.now().strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+
+                new_alerts.append(alert)
+
+    except Exception as error:
+        st.warning(
+            f"Kafka connection or reading error: {error}"
+        )
+
+    # --------------------------------------------------
+    # 4. Save new Kafka messages in existing CSV format
+    # --------------------------------------------------
 
     if new_alerts:
-        pd.DataFrame(new_alerts).to_csv(
+
+        csv_records = []
+
+        for alert in new_alerts:
+            csv_records.append({
+                "Received At": alert["Received At"],
+                "Transaction ID": alert["Transaction ID"],
+                "Fraud Probability": alert["Fraud Probability"],
+                "Threshold": alert["Threshold"],
+                "Prediction": alert["Prediction"],
+                "Label": alert["Label"],
+            })
+
+        pd.DataFrame(csv_records).to_csv(
             ALERT_FILE,
             mode="a",
             header=not ALERT_FILE.exists(),
             index=False,
         )
-        st.session_state.live_alerts.extend(new_alerts)
+
+        all_alerts.extend(new_alerts)
+
+    # --------------------------------------------------
+    # 5. Remove duplicate Transaction IDs
+    # --------------------------------------------------
+
+    combined_df = pd.DataFrame(all_alerts)
+
+    if not combined_df.empty:
+
+        has_id = combined_df["Transaction ID"].notna()
+
+        identified = combined_df[has_id].drop_duplicates(
+            subset=["Transaction ID"],
+            keep="first",
+        )
+
+        unidentified = combined_df[~has_id]
+
+        combined_df = pd.concat(
+            [identified, unidentified],
+            ignore_index=True,
+        )
+
+    # --------------------------------------------------
+    # 6. Store final dashboard records
+    # --------------------------------------------------
+
+    st.session_state.live_alerts = (
+        combined_df.to_dict("records")
+        if not combined_df.empty
+        else []
+    )
 
 
+# --------------------------------------------------
 # Load monitoring information
 # --------------------------------------------------
 
@@ -237,7 +433,9 @@ if page == "Overview":
 
     col4.metric(
         "XGBoost PR-AUC",
-        f"{pr_auc:.4f}" if isinstance(pr_auc, (int, float)) else "N/A",
+        f"{pr_auc:.4f}"
+        if isinstance(pr_auc, (int, float))
+        else "N/A",
     )
 
     st.divider()
@@ -378,6 +576,7 @@ elif page == "Data Drift":
             "Drift report data not found. "
             "Run src/drift_monitor.py first."
         )
+
     else:
         drift_count = drift.get("drifted_features", 0)
         total_features = drift.get("total_features", 0)
@@ -425,7 +624,7 @@ elif page == "Data Drift":
 
 
 # --------------------------------------------------
-# Live Kafka Alerts
+# Live Kafka Alerts + Complete Transaction History
 # --------------------------------------------------
 
 elif page == "Live Kafka Alerts":
@@ -433,8 +632,8 @@ elif page == "Live Kafka Alerts":
     st.header("Live Kafka Fraud Alerts")
 
     st.caption(
-        "Real-time transactions from Kafka topic: "
-        "fraud-transactions"
+        "Transaction history from JSONL and real-time messages "
+        "from Kafka topic: fraud-transactions"
     )
 
     @st.fragment(run_every="3s")
@@ -447,39 +646,81 @@ elif page == "Live Kafka Alerts":
 
             fraud_count = sum(
                 1 for alert in alerts
-                if alert["Prediction"] == 1
+                if safe_number(alert.get("Prediction")) == 1
             )
 
-            normal_count = len(alerts) - fraud_count
+            normal_count = sum(
+                1 for alert in alerts
+                if safe_number(alert.get("Prediction")) == 0
+            )
 
-            col1, col2, col3 = st.columns(3)
+            unknown_count = (
+                len(alerts) - fraud_count - normal_count
+            )
 
-            col1.metric("Total Alerts", len(alerts))
-            col2.metric("Fraud Alerts", fraud_count)
-            col3.metric("Normal Transactions", normal_count)
+            col1, col2, col3, col4 = st.columns(4)
+
+            col1.metric(
+                "Total Transactions",
+                len(alerts),
+            )
+
+            col2.metric(
+                "Predicted Fraud",
+                fraud_count,
+            )
+
+            col3.metric(
+                "Predicted Normal",
+                normal_count,
+            )
+
+            col4.metric(
+                "Unknown Predictions",
+                unknown_count,
+            )
 
             st.divider()
 
             if alerts:
+
                 alert_df = pd.DataFrame(alerts)
+
+                alert_df["Prediction"] = pd.to_numeric(
+                    alert_df["Prediction"],
+                    errors="coerce",
+                ).astype("Int64")
+
+                alert_df["Actual Fraud"] = pd.to_numeric(
+                    alert_df["Actual Fraud"],
+                    errors="coerce",
+                ).astype("Int64")
+
+                st.subheader("Transaction Records")
 
                 st.dataframe(
                     alert_df.iloc[::-1],
                     use_container_width=True,
                     hide_index=True,
                 )
+
+                st.caption(
+                    "Predicted Fraud represents model predictions. "
+                    "Actual Fraud is ground truth and may be unavailable "
+                    "for live transactions."
+                )
+
             else:
                 st.info(
-                    "Waiting for new Kafka transactions..."
+                    "No transaction records found."
                 )
 
         except Exception as error:
             st.error(
-                f"Kafka connection or reading error: {error}"
+                f"Could not load transaction alerts: {error}"
             )
 
     display_live_alerts()
-
 
 
 # --------------------------------------------------
@@ -492,12 +733,17 @@ elif page == "Fraud Network":
 
     st.caption(
         "Card-device relationships from IEEE-CIS training data. "
-        "Only devices shared by 2?20 cards are considered."
+        "Only devices shared by 2–20 cards are considered."
     )
 
     required_columns = [
-        "TransactionID", "isFraud",
-        "card1", "card2", "card3", "card5", "card6",
+        "TransactionID",
+        "isFraud",
+        "card1",
+        "card2",
+        "card3",
+        "card5",
+        "card6",
         "DeviceInfo",
     ]
 
@@ -506,21 +752,39 @@ elif page == "Fraud Network":
         st.stop()
 
     with st.spinner("Building card-device network..."):
-        df = pd.read_csv(TRAIN_FILE, usecols=required_columns)
 
-        card_columns = ["card1", "card2", "card3", "card5", "card6"]
+        df = pd.read_csv(
+            TRAIN_FILE,
+            usecols=required_columns,
+        )
 
-        card_key = df[card_columns[0]].astype("string").fillna("missing")
+        card_columns = [
+            "card1",
+            "card2",
+            "card3",
+            "card5",
+            "card6",
+        ]
+
+        card_key = (
+            df[card_columns[0]]
+            .astype("string")
+            .fillna("missing")
+        )
+
         for column in card_columns[1:]:
             card_key = card_key.str.cat(
                 df[column].astype("string").fillna("missing"),
-                sep="_"
+                sep="_",
             )
+
         df["card_key"] = card_key
 
         missing_card = df["card1"].isna()
+
         df.loc[missing_card, "card_key"] = (
-            "missing_" + df.loc[missing_card, "TransactionID"].astype(str)
+            "missing_"
+            + df.loc[missing_card, "TransactionID"].astype(str)
         )
 
         known = df[df["DeviceInfo"].notna()].copy()
@@ -537,7 +801,9 @@ elif page == "Fraud Network":
         ].nlargest(10, "fraud_transactions")
 
         if selected.empty:
-            st.info("No qualifying shared-device groups were found.")
+            st.info(
+                "No qualifying shared-device groups were found."
+            )
             st.stop()
 
         network_rows = known[
@@ -557,6 +823,7 @@ elif page == "Fraud Network":
         graph = nx.Graph()
 
         for device, row in selected.iterrows():
+
             graph.add_node(
                 ("device", device),
                 kind="device",
@@ -567,6 +834,7 @@ elif page == "Fraud Network":
             )
 
         for card, row in card_stats.iterrows():
+
             graph.add_node(
                 ("card", card),
                 kind="card",
@@ -577,6 +845,7 @@ elif page == "Fraud Network":
             )
 
         for _, edge in edges.iterrows():
+
             graph.add_edge(
                 ("device", edge["DeviceInfo"]),
                 ("card", edge["card_key"]),
@@ -590,39 +859,47 @@ elif page == "Fraud Network":
         )
 
     fraud_cards = [
-        node for node, attrs in graph.nodes(data=True)
-        if attrs["kind"] == "card" and attrs["is_fraud"] == 1
+        node
+        for node, attrs in graph.nodes(data=True)
+        if attrs["kind"] == "card"
+        and attrs["is_fraud"] == 1
     ]
 
     other_cards = [
-        node for node, attrs in graph.nodes(data=True)
-        if attrs["kind"] == "card" and attrs["is_fraud"] == 0
+        node
+        for node, attrs in graph.nodes(data=True)
+        if attrs["kind"] == "card"
+        and attrs["is_fraud"] == 0
     ]
 
     device_nodes = [
-        node for node, attrs in graph.nodes(data=True)
+        node
+        for node, attrs in graph.nodes(data=True)
         if attrs["kind"] == "device"
     ]
 
     col1, col2, col3, col4 = st.columns(4)
+
     col1.metric("Shared Devices", len(device_nodes))
     col2.metric("Connected Cards", len(card_stats))
     col3.metric("Card-Device Links", len(edges))
     col4.metric("Cards with Fraud Labels", len(fraud_cards))
 
     st.info(
-        "Red = card has at least one confirmed fraud transaction in the "
-        "training data. Grey = no confirmed fraud transaction in this data. "
-        "Blue = shared device. A shared device is an investigation lead, "
-        "not proof of a coordinated fraud ring."
+        "Red = card has at least one confirmed fraud transaction "
+        "in the training data. Grey = no confirmed fraud transaction "
+        "in this data. Blue = shared device. A shared device is an "
+        "investigation lead, not proof of a coordinated fraud ring."
     )
 
     edge_x = []
     edge_y = []
 
     for source, target in graph.edges():
+
         x0, y0 = positions[source]
         x1, y1 = positions[target]
+
         edge_x.extend([x0, x1, None])
         edge_y.extend([y0, y1, None])
 
@@ -638,6 +915,7 @@ elif page == "Fraud Network":
     ))
 
     def add_card_trace(nodes, name, color):
+
         if not nodes:
             return
 
@@ -646,7 +924,11 @@ elif page == "Fraud Network":
             y=[positions[node][1] for node in nodes],
             mode="markers",
             name=name,
-            marker=dict(size=12, color=color, line=dict(width=1, color="white")),
+            marker=dict(
+                size=12,
+                color=color,
+                line=dict(width=1, color="white"),
+            ),
             customdata=[
                 [
                     graph.nodes[node]["label"],
@@ -663,8 +945,17 @@ elif page == "Fraud Network":
             ),
         ))
 
-    add_card_trace(fraud_cards, "Confirmed fraud card", "#dc2626")
-    add_card_trace(other_cards, "Other connected card", "#9ca3af")
+    add_card_trace(
+        fraud_cards,
+        "Confirmed fraud card",
+        "#dc2626",
+    )
+
+    add_card_trace(
+        other_cards,
+        "Other connected card",
+        "#9ca3af",
+    )
 
     fig.add_trace(go.Scatter(
         x=[positions[node][0] for node in device_nodes],
@@ -704,12 +995,20 @@ elif page == "Fraud Network":
         xaxis=dict(visible=False),
         yaxis=dict(visible=False),
         plot_bgcolor="white",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+        ),
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+    )
 
     st.subheader("Selected Shared Devices")
+
     st.dataframe(
         selected.reset_index(),
         use_container_width=True,
@@ -718,7 +1017,8 @@ elif page == "Fraud Network":
 
     st.caption(
         "Graph uses confirmed IEEE-CIS training labels; "
-        "it does not establish that connected accounts belong to the same actor."
+        "it does not establish that connected accounts belong "
+        "to the same actor."
     )
 
 

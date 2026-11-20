@@ -61,3 +61,16 @@ scripts/patch_api_blend.py
 /tunnel.log
 /tunnel_out.log
 /feature_repo/feature_repo/data/registry.db
+
+# Local MLflow portable tracking
+/mlflow_portable.db
+/mlruns_portable/
+
+# Local test and runtime logs
+*.log
+/reports/kafka_alerts_backup.csv
+/reports/live_retraining_trigger.json
+
+# Local recovery files
+/recovered-requirements.txt
+/requirements-f-rebuild.txt

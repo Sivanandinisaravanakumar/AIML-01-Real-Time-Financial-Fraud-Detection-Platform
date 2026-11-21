@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: ieee-cis-fraud-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile.ieee
+    dockerContext: .
+    healthCheckPath: /
+    envVars:
+      - key: KAFKA_DISABLED
+        value: "1"
+      - key: PYTHONUNBUFFERED
+        value: "1"
